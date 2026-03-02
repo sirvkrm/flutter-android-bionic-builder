@@ -1,0 +1,9 @@
+.cipd/
+.gclient
+.gclient_entries
+.gclient_previous_sync_commits
+depot_tools/
+dist/
+release/
+src/
+*.tar.gz

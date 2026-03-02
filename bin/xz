@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Minimal xz wrapper for environments without the system xz binary.
+
+This only implements the small subset needed by GNU tar when extracting
+.tar.xz archives during the Flutter engine bootstrap.
+"""
+
+from __future__ import annotations
+
+import lzma
+import sys
+from pathlib import Path
+
+
+def main(argv: list[str]) -> int:
+    decompress = False
+    to_stdout = False
+    file_args: list[str] = []
+
+    for arg in argv[1:]:
+        if arg in ("-d", "--decompress", "--uncompress"):
+            decompress = True
+        elif arg in ("-c", "--stdout", "--to-stdout"):
+            to_stdout = True
+        elif arg == "--":
+            continue
+        elif arg.startswith("-"):
+            # Ignore other flags that tar may pass, such as -f.
+            continue
+        else:
+            file_args.append(arg)
+
+    if not decompress:
+        print("xz shim only supports decompression", file=sys.stderr)
+        return 2
+
+    if file_args:
+        if len(file_args) != 1:
+            print("xz shim only supports a single input file", file=sys.stderr)
+            return 2
+        data = Path(file_args[0]).read_bytes()
+        output = lzma.decompress(data, format=lzma.FORMAT_XZ)
+    else:
+        output = lzma.decompress(sys.stdin.buffer.read(), format=lzma.FORMAT_XZ)
+
+    if to_stdout or not file_args:
+        sys.stdout.buffer.write(output)
+        return 0
+
+    input_path = Path(file_args[0])
+    output_path = input_path.with_suffix("")
+    output_path.write_bytes(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
