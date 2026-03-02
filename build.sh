@@ -443,6 +443,44 @@ find_termux_const_finder() {
   printf '%s\n' "$candidate"
 }
 
+normalize_dart_sdk_semver() {
+  local cache_root=$1
+  local version_file="$cache_root/dart-sdk/version"
+  local current_version=""
+  local normalized_version=""
+
+  [[ -f "$version_file" ]] || return 0
+  current_version=$(tr -d '\r\n' < "$version_file")
+
+  if [[ "$current_version" != *-* || "$current_version" == *+* ]]; then
+    return 0
+  fi
+
+  normalized_version="${current_version/-/+}"
+  note "Normalizing Dart SDK version: $current_version -> $normalized_version"
+
+  python3 - "$cache_root" "$current_version" "$normalized_version" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+old = sys.argv[2].encode()
+new = sys.argv[3].encode()
+changed = 0
+
+for path in root.rglob('*'):
+    if not path.is_file():
+        continue
+    data = path.read_bytes()
+    if old not in data:
+        continue
+    path.write_bytes(data.replace(old, new))
+    changed += 1
+
+print(f"Patched {changed} files under {root}")
+PY
+}
+
 package_termux_host_bundle() {
   local out_dir=$1
   local bundle_stamp
@@ -481,6 +519,8 @@ package_termux_host_bundle() {
     cp -a "$out_dir/gen_snapshot_product" "$host_engine_dir/gen_snapshot_product"
     cp -a "$out_dir/gen_snapshot_product" "$host_gen_snapshot_dir/gen_snapshot_product"
   fi
+
+  normalize_dart_sdk_semver "$cache_root"
 
   cat >"$stage_dir/README.md" <<EOF
 # Flutter Android Bionic Termux Host Bundle

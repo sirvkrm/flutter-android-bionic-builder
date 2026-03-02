@@ -15,6 +15,10 @@ This repo does not vendor the full Flutter engine checkout. `build.sh` bootstrap
   - `const_finder.dart.snapshot`
   - `gen_snapshot`
 
+The Termux host bundle rewrites the Dart SDK version from prerelease syntax to
+stable build-metadata syntax (for example `3.7.0-260.0.dev` becomes
+`3.7.0+260.0.dev`) so Flutter's `pub` dependency resolution accepts it.
+
 The current patch set is tuned for Android NDK `r27c` and keeps `libflutter.so` linked only against Android system libraries for broad compatibility.
 
 ## Supported ABIs
