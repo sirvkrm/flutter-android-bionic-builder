@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 WORKSPACE_DIR=$SCRIPT_DIR
 SRC_DIR="$WORKSPACE_DIR/src"
+SRC_REPO_DIR="$SRC_DIR"
 BUILD_REPO_DIR="$SRC_DIR/build"
 ENGINE_DIR="$SRC_DIR/flutter"
 PATCH_DIR="$WORKSPACE_DIR/patches"
@@ -168,18 +169,60 @@ ensure_flutter_checkout() {
   [[ -x "$NINJA_BIN" ]] || die "missing $NINJA_BIN after checkout bootstrap"
 }
 
-apply_patch_if_needed() {
+patch_first_path() {
   local patch_file=$1
+  sed -n 's|^diff --git a/\([^[:space:]]\+\) b/.*$|\1|p;q' "$patch_file"
+}
 
-  [[ -f "$patch_file" ]] || return 0
+detect_patch_repo() {
+  local patch_file=$1
+  local first_path=""
 
-  if git -C "$BUILD_REPO_DIR" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+  first_path=$(patch_first_path "$patch_file" || true)
+
+  if [[ -n "$first_path" && -e "$SRC_REPO_DIR/$first_path" ]]; then
+    printf '%s\n' "$SRC_REPO_DIR"
     return 0
   fi
 
-  if git -C "$BUILD_REPO_DIR" apply --check "$patch_file" >/dev/null 2>&1; then
-    note "Applying $(basename "$patch_file")"
-    git -C "$BUILD_REPO_DIR" apply "$patch_file"
+  if [[ -n "$first_path" && -e "$ENGINE_DIR/$first_path" ]]; then
+    printf '%s\n' "$ENGINE_DIR"
+    return 0
+  fi
+
+  if git -C "$SRC_REPO_DIR" apply --check "$patch_file" >/dev/null 2>&1 ||
+    git -C "$SRC_REPO_DIR" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    printf '%s\n' "$SRC_REPO_DIR"
+    return 0
+  fi
+
+  if git -C "$ENGINE_DIR" apply --check "$patch_file" >/dev/null 2>&1 ||
+    git -C "$ENGINE_DIR" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    printf '%s\n' "$ENGINE_DIR"
+    return 0
+  fi
+
+  return 1
+}
+
+apply_patch_if_needed() {
+  local patch_file=$1
+  local repo_dir=""
+
+  [[ -f "$patch_file" ]] || return 0
+
+  if ! repo_dir=$(detect_patch_repo "$patch_file"); then
+    note "Skipping $(basename "$patch_file") (no matching checkout found)"
+    return 0
+  fi
+
+  if git -C "$repo_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if git -C "$repo_dir" apply --check "$patch_file" >/dev/null 2>&1; then
+    note "Applying $(basename "$patch_file") in $(basename "$repo_dir")"
+    git -C "$repo_dir" apply "$patch_file"
     return 0
   fi
 
@@ -364,6 +407,157 @@ out_dir_for() {
   printf '%s\n' "$SRC_DIR/out/$suffix"
 }
 
+release_stamp() {
+  if [[ -n "${RELEASE_STAMP:-}" ]]; then
+    printf '%s\n' "$RELEASE_STAMP"
+    return 0
+  fi
+
+  date -u +%Y%m%d
+}
+
+termux_host_out_dir() {
+  printf '%s\n' "$SRC_DIR/out/android_debug_unopt_arm64_termuxsdk"
+}
+
+find_termux_font_subset() {
+  local out_dir=$1
+  local candidate
+
+  for candidate in "$out_dir/font-subset" "$out_dir/exe.stripped/font-subset"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+find_termux_const_finder() {
+  local out_dir=$1
+  local candidate
+
+  candidate=$(find "$out_dir" -type f -name const_finder.dart.snapshot -print -quit)
+  [[ -n "$candidate" ]] || return 1
+  printf '%s\n' "$candidate"
+}
+
+package_termux_host_bundle() {
+  local out_dir=$1
+  local bundle_stamp
+  bundle_stamp=$(release_stamp)
+  local bundle_name="flutter-android-bionic-termux-host-arm64-$bundle_stamp"
+  local stage_dir="$WORKSPACE_DIR/out/$bundle_name"
+  local archive_path="$WORKSPACE_DIR/dist/$bundle_name.tar.gz"
+  local overlay_root="$stage_dir/overlay"
+  local cache_root="$overlay_root/bin/cache"
+  local engine_root="$cache_root/artifacts/engine"
+  local host_engine_dir="$engine_root/linux-arm64"
+  local host_gen_snapshot_dir="$engine_root/android-arm-profile/linux-arm64"
+  local dart_sdk_dir="$out_dir/dart-sdk"
+  local gen_snapshot_src="$dart_sdk_dir/bin/utils/gen_snapshot"
+  local font_subset_src=""
+  local const_finder_src=""
+
+  [[ -d "$dart_sdk_dir" ]] || die "missing Dart SDK output: $dart_sdk_dir"
+  [[ -f "$gen_snapshot_src" ]] || die "missing Termux gen_snapshot: $gen_snapshot_src"
+
+  font_subset_src=$(find_termux_font_subset "$out_dir") ||
+    die "missing font-subset output in $out_dir"
+  const_finder_src=$(find_termux_const_finder "$out_dir") ||
+    die "missing const_finder.dart.snapshot output in $out_dir"
+
+  rm -rf "$stage_dir"
+  mkdir -p "$cache_root" "$host_engine_dir" "$host_gen_snapshot_dir" "$WORKSPACE_DIR/dist"
+
+  cp -a "$dart_sdk_dir" "$cache_root/"
+  cp -a "$font_subset_src" "$host_engine_dir/font-subset"
+  cp -a "$const_finder_src" "$host_engine_dir/const_finder.dart.snapshot"
+  cp -a "$gen_snapshot_src" "$host_engine_dir/gen_snapshot"
+  cp -a "$gen_snapshot_src" "$host_gen_snapshot_dir/gen_snapshot"
+
+  if [[ -f "$out_dir/gen_snapshot_product" ]]; then
+    cp -a "$out_dir/gen_snapshot_product" "$host_engine_dir/gen_snapshot_product"
+    cp -a "$out_dir/gen_snapshot_product" "$host_gen_snapshot_dir/gen_snapshot_product"
+  fi
+
+  cat >"$stage_dir/README.md" <<EOF
+# Flutter Android Bionic Termux Host Bundle
+
+This archive overlays the Flutter SDK cache with Android-bionic host tools for
+Termux-style environments.
+
+Files provided:
+
+- bin/cache/dart-sdk
+- bin/cache/artifacts/engine/linux-arm64/font-subset
+- bin/cache/artifacts/engine/linux-arm64/const_finder.dart.snapshot
+- bin/cache/artifacts/engine/linux-arm64/gen_snapshot
+- bin/cache/artifacts/engine/android-arm-profile/linux-arm64/gen_snapshot
+
+Copy the contents of overlay/ on top of a Flutter SDK checkout after applying
+the Termux host compatibility patch in the installer repo.
+EOF
+
+  tar -czf "$archive_path" -C "$WORKSPACE_DIR/out" "$bundle_name"
+
+  note ""
+  note "Built Termux host bundle:"
+  note "  $archive_path"
+  note "Overlay root:"
+  note "  $overlay_root"
+}
+
+build_termux_host_bundle() {
+  local ndk_root=$1
+  local ndk_clang_version=$2
+  local out_dir
+  out_dir=$(termux_host_out_dir)
+  local target_dir
+  target_dir=$(basename "$out_dir")
+
+  local gn_cmd=(
+    "$GN_TOOL"
+    --android
+    --android-cpu arm64
+    --runtime-mode debug
+    --unoptimized
+    --no-prebuilt-dart-sdk
+    --disable-desktop-embeddings
+    --target-dir "$target_dir"
+    "--gn-args=android_ndk_root=\"$ndk_root\""
+    "--gn-args=android_toolchain_clang_version=\"$ndk_clang_version\""
+    "--gn-args=flutter_build_engine_artifacts_for_android=true"
+    "--gn-args=enable_vulkan_validation_layers=false"
+    "--gn-args=impeller_enable_vulkan_validation_layers=false"
+  )
+
+  note ""
+  note "Generating Termux host SDK in $target_dir"
+  (
+    cd "$SRC_DIR"
+    "${gn_cmd[@]}"
+  )
+
+  note "Building Termux host tools: dart_sdk_archive, font-subset, const_finder"
+  (
+    cd "$SRC_DIR"
+    "$NINJA_BIN" -C "${out_dir#$SRC_DIR/}" dart_sdk_archive font-subset \
+      flutter/tools/const_finder:const_finder
+  )
+
+  package_termux_host_bundle "$out_dir"
+
+  local llvm_readelf=""
+  llvm_readelf=$(detect_llvm_readelf || true)
+  if [[ -n "$llvm_readelf" && -f "$out_dir/dart-sdk/bin/dart" ]]; then
+    note ""
+    note "dart-sdk/bin/dart NEEDED entries:"
+    "$llvm_readelf" -d "$out_dir/dart-sdk/bin/dart" | sed -n '1,120p' | grep 'Shared library' || true
+  fi
+}
+
 build_one() {
   local mode=$1
   local abi=$2
@@ -465,6 +659,21 @@ main() {
   host_tag=$(detect_ndk_host_tag)
   local ndk_clang_version
   ndk_clang_version=$(detect_ndk_clang_version "$ndk_root" "$host_tag")
+
+  local command_input=${1:-}
+  case "${command_input,,}" in
+    termux-sdk|host-sdk|termux-host)
+      local host_abi_input=${2:-${TARGET_ABI:-arm64-v8a}}
+      local host_abi
+      host_abi=$(normalize_abi "$host_abi_input")
+      [[ "$host_abi" == "arm64-v8a" ]] ||
+        die "Termux host bundle is currently only supported for arm64-v8a"
+      note "Using Android NDK: $ndk_root"
+      note "NDK clang runtime version: $ndk_clang_version"
+      build_termux_host_bundle "$ndk_root" "$ndk_clang_version"
+      return 0
+      ;;
+  esac
 
   local mode_input abi_input portable_input
   mode_input=${1:-${BUILD_MODE:-}}

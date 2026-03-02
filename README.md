@@ -1,14 +1,19 @@
 # Flutter Android Bionic Builder
 
-Minimal wrapper project for building the Flutter engine and Android embedding artifacts against Android bionic with the Android NDK.
+Minimal wrapper project for building the Flutter engine, Android embedding artifacts, and a Termux-ready Android-bionic host toolchain bundle with the Android NDK.
 
-This repo does not vendor the full Flutter engine checkout. `build.sh` bootstraps `depot_tools`, fetches the Flutter engine source on first run, applies the local compatibility patches, and then builds the requested Android ABI.
+This repo does not vendor the full Flutter engine checkout. `build.sh` bootstraps `depot_tools`, fetches the Flutter engine source on first run, applies the local compatibility patches, and then builds either the requested Android ABI or the Termux host bundle overlay.
 
 ## What it builds
 
 - `libflutter.so`
 - `flutter.jar`
 - ABI-specific Android jar such as `arm64_v8a_debug.jar`
+- a Termux host bundle tarball that overlays Flutter's `bin/cache` with:
+  - Android-bionic `dart-sdk`
+  - `font-subset`
+  - `const_finder.dart.snapshot`
+  - `gen_snapshot`
 
 The current patch set is tuned for Android NDK `r27c` and keeps `libflutter.so` linked only against Android system libraries for broad compatibility.
 
@@ -48,6 +53,12 @@ Build all Android ABIs:
 ./build.sh debug all y
 ```
 
+Build the Termux host bundle overlay:
+
+```bash
+./build.sh termux-sdk
+```
+
 Argument format:
 
 ```bash
@@ -56,9 +67,11 @@ Argument format:
 
 The last flag controls whether Vulkan validation layers are disabled in debug builds for better portability.
 
+The Termux host bundle command currently builds the `arm64` host overlay only and writes a tarball into `dist/`.
+
 ## Patches
 
-Stored patches live in `patches/` and are applied automatically to the `src/build` checkout when needed.
+Stored patches live in `patches/` and are applied automatically to the matching engine checkout (`src/` or `src/flutter/`) when needed.
 
 ## Contact
 

@@ -4,6 +4,7 @@
 .gclient_previous_sync_commits
 depot_tools/
 dist/
+out/
 release/
 src/
 *.tar.gz

@@ -1,246 +1,242 @@
 #!/usr/bin/env python3
-"""Minimal pkg-config implementation for Chromium/Flutter GN bootstraps.
-
-This supports the subset used by //build/config/linux/pkg-config.py:
-  - --variable=<name>
-  - --modversion
-  - --atleast-version=<ver>
-  - --cflags
-  - --libs
-"""
-
-from __future__ import annotations
-
 import os
 import re
-import shlex
 import sys
 from pathlib import Path
 
 
-_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+VAR_RE = re.compile(r"\$\{([^}]+)\}")
+VAR_ASSIGN_RE = re.compile(r"^([A-Za-z0-9_]+)\s*=\s*(.*)$")
+FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_.+-]*)\s*:\s*(.*)$")
+REQ_NAME_RE = re.compile(r"([A-Za-z0-9_.+-]+)")
 
 
-class PcFile:
-    def __init__(self, path: Path) -> None:
+class PcPackage:
+    def __init__(self, name: str, path: Path) -> None:
+        self.name = name
         self.path = path
-        self.vars_raw: dict[str, str] = {}
-        self.fields_raw: dict[str, str] = {}
-        self._vars_cache: dict[str, str] = {}
-        self._fields_cache: dict[str, str] = {}
-        self._parse()
-
-    def _parse(self) -> None:
-        for raw_line in self.path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            eq = line.find("=")
-            colon = line.find(":")
-            if eq != -1 and (colon == -1 or eq < colon):
-                key = line[:eq].strip()
-                value = line[eq + 1 :].strip()
-                self.vars_raw[key] = value
-            elif colon != -1:
-                key = line[:colon].strip()
-                value = line[colon + 1 :].strip()
-                self.fields_raw[key] = value
-
-    def _expand(self, value: str, stack: set[str]) -> str:
-        def repl(match: re.Match[str]) -> str:
-            key = match.group(1)
-            if key in stack:
-                return ""
-            return self.get_var(key, stack)
-
-        previous = None
-        current = value
-        while current != previous:
-            previous = current
-            current = _VAR_RE.sub(repl, current)
-        return current
-
-    def get_var(self, key: str, stack: set[str] | None = None) -> str:
-        if key in self._vars_cache:
-            return self._vars_cache[key]
-        if stack is None:
-            stack = set()
-        stack = set(stack)
-        stack.add(key)
-        if key == "pcfiledir":
-            value = str(self.path.parent)
-        else:
-            value = self.vars_raw.get(key, "")
-        value = self._expand(value, stack)
-        self._vars_cache[key] = value
-        return value
-
-    def get_field(self, key: str) -> str:
-        if key in self._fields_cache:
-            return self._fields_cache[key]
-        value = self._expand(self.fields_raw.get(key, ""), set())
-        self._fields_cache[key] = value
-        return value
+        self.variables = {}
+        self.fields = {}
 
 
-def _split_search_dirs() -> list[Path]:
-    search = os.environ.get("PKG_CONFIG_LIBDIR") or os.environ.get("PKG_CONFIG_PATH") or ""
-    return [Path(entry) for entry in search.split(":") if entry]
+def expand(value: str, variables: dict[str, str], stack: tuple[str, ...] = ()) -> str:
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key in stack:
+            return ""
+        return expand(variables.get(key, ""), variables, stack + (key,))
+
+    previous = None
+    current = value
+    while previous != current:
+        previous = current
+        current = VAR_RE.sub(repl, current)
+    return current
 
 
-def _find_pc(name: str, search_dirs: list[Path]) -> Path:
-    filename = f"{name}.pc"
-    for directory in search_dirs:
-        candidate = directory / filename
+def parse_pc_file(path: Path, name: str) -> PcPackage:
+    package = PcPackage(name, path)
+    raw_lines = path.read_text(encoding="utf-8").splitlines()
+    lines: list[str] = []
+    pending = ""
+    for raw in raw_lines:
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1]
+            continue
+        if pending:
+            line = pending + line
+            pending = ""
+        lines.append(line)
+
+    for line in lines:
+        var_match = VAR_ASSIGN_RE.match(line)
+        if var_match:
+            key, value = var_match.groups()
+            package.variables[key] = value
+            continue
+        field_match = FIELD_RE.match(line)
+        if field_match:
+            key, value = field_match.groups()
+            package.fields[key] = value
+
+    package.variables = {
+        key: expand(value, package.variables) for key, value in package.variables.items()
+    }
+    package.fields = {
+        key: expand(value, package.variables) for key, value in package.fields.items()
+    }
+    return package
+
+
+def parse_package_name(token: str) -> str:
+    match = REQ_NAME_RE.search(token.strip())
+    return match.group(1) if match else ""
+
+
+def pc_search_dirs() -> list[Path]:
+    search = []
+    for env_var in ("PKG_CONFIG_LIBDIR", "PKG_CONFIG_PATH"):
+        value = os.environ.get(env_var, "")
+        for entry in value.split(":"):
+            if entry:
+                search.append(Path(entry))
+    if not search:
+        search.extend(
+            [
+                Path("/usr/lib/pkgconfig"),
+                Path("/usr/share/pkgconfig"),
+                Path("/usr/local/lib/pkgconfig"),
+                Path("/usr/local/share/pkgconfig"),
+            ]
+        )
+    return search
+
+
+def load_package(name: str, cache: dict[str, PcPackage]) -> PcPackage:
+    if name in cache:
+        return cache[name]
+    for directory in pc_search_dirs():
+        candidate = directory / f"{name}.pc"
         if candidate.is_file():
-            return candidate
-    raise FileNotFoundError(f"package '{name}' not found in PKG_CONFIG_LIBDIR")
+            cache[name] = parse_pc_file(candidate, name)
+            return cache[name]
+    raise FileNotFoundError(f"package {name!r} not found in PKG_CONFIG_LIBDIR")
 
 
-def _parse_requires(value: str) -> list[str]:
-    packages: list[str] = []
-    for chunk in value.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        token = chunk.split()[0]
-        if token:
-            packages.append(token)
-    return packages
-
-
-def _version_key(version: str) -> list[object]:
-    parts = re.split(r"([0-9]+)", version)
-    key: list[object] = []
-    for part in parts:
-        if not part:
-            continue
-        if part.isdigit():
-            key.append(int(part))
-        else:
-            key.append(part)
-    return key
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
-
-
-def _collect(name: str, search_dirs: list[Path], loaded: dict[str, PcFile], visiting: set[str]) -> PcFile:
-    if name in loaded:
-        return loaded[name]
-    if name in visiting:
-        raise RuntimeError(f"cyclic pkg-config dependency involving '{name}'")
-    visiting.add(name)
-    pc = PcFile(_find_pc(name, search_dirs))
-    loaded[name] = pc
-    for dep in _parse_requires(pc.get_field("Requires")):
-        _collect(dep, search_dirs, loaded, visiting)
-    visiting.remove(name)
-    return pc
-
-
-def _gather_flags(
-    name: str,
-    loaded: dict[str, PcFile],
-    kind: str,
-    seen: set[str],
-) -> list[str]:
-    if name in seen:
+def split_requires(raw: str) -> list[str]:
+    if not raw:
         return []
-    seen.add(name)
-    pc = loaded[name]
-    flags: list[str] = []
-    for dep in _parse_requires(pc.get_field("Requires")):
-        flags.extend(_gather_flags(dep, loaded, kind, seen))
-    field = "Cflags" if kind == "cflags" else "Libs"
-    raw = pc.get_field(field)
-    if raw:
-        flags.extend(shlex.split(raw))
-    return flags
+    results = []
+    for part in raw.split(","):
+        name = parse_package_name(part)
+        if name:
+            results.append(name)
+    return results
 
 
-def main(argv: list[str]) -> int:
-    want_cflags = False
-    want_libs = False
-    want_modversion = False
-    variable_name: str | None = None
-    atleast_version: str | None = None
+def version_key(version: str) -> tuple:
+    parts = re.findall(r"\d+|[A-Za-z]+", version)
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part))
+    return tuple(key)
+
+
+def collect_packages(
+    names: list[str], cache: dict[str, PcPackage], include_private: bool = False
+) -> list[PcPackage]:
+    ordered: list[PcPackage] = []
+    seen: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        package = load_package(name, cache)
+        requires = split_requires(package.fields.get("Requires", ""))
+        if include_private:
+            requires += split_requires(package.fields.get("Requires.private", ""))
+        for dep in requires:
+            visit(dep)
+        ordered.append(package)
+
+    for name in names:
+        visit(name)
+    return ordered
+
+
+def shell_split_flags(value: str) -> list[str]:
+    if not value:
+        return []
+    return [flag for flag in value.split() if flag]
+
+
+def unique(sequence: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out = []
+    for item in sequence:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        return 1
+
+    variable_name = None
+    ask_modversion = False
+    cflags = False
+    libs = False
+    atleast_version = None
     package_names: list[str] = []
 
-    for arg in argv[1:]:
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg == "--cflags":
-            want_cflags = True
+            cflags = True
         elif arg == "--libs":
-            want_libs = True
+            libs = True
         elif arg == "--modversion":
-            want_modversion = True
+            ask_modversion = True
         elif arg.startswith("--variable="):
             variable_name = arg.split("=", 1)[1]
         elif arg.startswith("--atleast-version="):
             atleast_version = arg.split("=", 1)[1]
         elif arg.startswith("-"):
-            # Ignore unsupported flags to stay compatible with lightweight use.
-            continue
+            pass
         else:
-            package_names.append(arg)
+            name = parse_package_name(arg)
+            if name:
+                package_names.append(name)
+        i += 1
 
     if not package_names:
-        print("pkg-config shim requires at least one package", file=sys.stderr)
         return 1
 
-    search_dirs = _split_search_dirs()
-    if not search_dirs:
-        print("PKG_CONFIG_LIBDIR is not set", file=sys.stderr)
-        return 1
-
-    loaded: dict[str, PcFile] = {}
+    cache: dict[str, PcPackage] = {}
     try:
-        for package in package_names:
-            _collect(package, search_dirs, loaded, set())
-    except Exception as exc:
-        print(str(exc), file=sys.stderr)
+        packages = collect_packages(package_names, cache, include_private=libs)
+    except FileNotFoundError as exc:
+        sys.stderr.write(f"{exc}\n")
         return 1
 
-    first = loaded[package_names[0]]
-
-    if variable_name is not None:
-        print(first.get_var(variable_name))
-        return 0
-
-    if want_modversion:
-        print(first.get_field("Version"))
-        return 0
+    primary = load_package(package_names[0], cache)
 
     if atleast_version is not None:
-        actual = first.get_field("Version")
-        if _version_key(actual) >= _version_key(atleast_version):
-            return 0
-        return 1
+        current = primary.fields.get("Version", "")
+        ok = version_key(current) >= version_key(atleast_version)
+        return 0 if ok else 1
 
-    result: list[str] = []
-    if want_cflags:
-        flags: list[str] = []
-        seen: set[str] = set()
-        for package in package_names:
-            flags.extend(_gather_flags(package, loaded, "cflags", seen))
-        result.extend(_dedupe(flags))
-    if want_libs:
-        flags = []
-        seen = set()
-        for package in package_names:
-            flags.extend(_gather_flags(package, loaded, "libs", seen))
-        result.extend(_dedupe(flags))
+    if variable_name is not None:
+        sys.stdout.write(primary.variables.get(variable_name, ""))
+        return 0
 
-    print(" ".join(result))
+    if ask_modversion:
+        sys.stdout.write(primary.fields.get("Version", ""))
+        return 0
+
+    flags: list[str] = []
+    if cflags:
+        for package in packages:
+            flags.extend(shell_split_flags(package.fields.get("Cflags", "")))
+    if libs:
+        for package in packages:
+            flags.extend(shell_split_flags(package.fields.get("Libs", "")))
+
+    sys.stdout.write(" ".join(unique(flags)))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    sys.exit(main())
