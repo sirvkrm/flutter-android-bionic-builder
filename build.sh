@@ -492,13 +492,29 @@ package_termux_host_bundle() {
   local cache_root="$overlay_root/bin/cache"
   local engine_root="$cache_root/artifacts/engine"
   local host_engine_dir="$engine_root/linux-arm64"
-  local -a host_gen_snapshot_dirs=(
+  local -a android_targets=(
+    "android-arm-profile"
+    "android-arm-release"
+    "android-arm64-profile"
+    "android-arm64-release"
+    "android-x64-profile"
+    "android-x64-release"
+  )
+  local -a host_gen_snapshot_dirs_linux=(
     "$engine_root/android-arm-profile/linux-arm64"
     "$engine_root/android-arm-release/linux-arm64"
     "$engine_root/android-arm64-profile/linux-arm64"
     "$engine_root/android-arm64-release/linux-arm64"
     "$engine_root/android-x64-profile/linux-arm64"
     "$engine_root/android-x64-release/linux-arm64"
+  )
+  local -a host_gen_snapshot_dirs_android=(
+    "$engine_root/android-arm-profile/android-arm64"
+    "$engine_root/android-arm-release/android-arm64"
+    "$engine_root/android-arm64-profile/android-arm64"
+    "$engine_root/android-arm64-release/android-arm64"
+    "$engine_root/android-x64-profile/android-arm64"
+    "$engine_root/android-x64-release/android-arm64"
   )
   local dart_sdk_dir="$out_dir/dart-sdk"
   local gen_snapshot_src="$dart_sdk_dir/bin/utils/gen_snapshot"
@@ -516,7 +532,7 @@ package_termux_host_bundle() {
   rm -rf "$stage_dir"
   mkdir -p "$cache_root" "$host_engine_dir" "$WORKSPACE_DIR/dist"
   local dir
-  for dir in "${host_gen_snapshot_dirs[@]}"; do
+  for dir in "${host_gen_snapshot_dirs_linux[@]}" "${host_gen_snapshot_dirs_android[@]}"; do
     mkdir -p "$dir"
   done
 
@@ -524,18 +540,38 @@ package_termux_host_bundle() {
   cp -a "$font_subset_src" "$host_engine_dir/font-subset"
   cp -a "$const_finder_src" "$host_engine_dir/const_finder.dart.snapshot"
   cp -a "$gen_snapshot_src" "$host_engine_dir/gen_snapshot"
-  for dir in "${host_gen_snapshot_dirs[@]}"; do
+  for dir in "${host_gen_snapshot_dirs_linux[@]}" "${host_gen_snapshot_dirs_android[@]}"; do
     cp -a "$gen_snapshot_src" "$dir/gen_snapshot"
   done
 
   if [[ -f "$out_dir/gen_snapshot_product" ]]; then
     cp -a "$out_dir/gen_snapshot_product" "$host_engine_dir/gen_snapshot_product"
-    for dir in "${host_gen_snapshot_dirs[@]}"; do
+    for dir in "${host_gen_snapshot_dirs_linux[@]}" "${host_gen_snapshot_dirs_android[@]}"; do
       cp -a "$out_dir/gen_snapshot_product" "$dir/gen_snapshot_product"
     done
   fi
 
   normalize_dart_sdk_semver "$cache_root"
+
+  local target=""
+  for target in "${android_targets[@]}"; do
+    local src_dir="$engine_root/$target/android-arm64"
+    local zip_path="$WORKSPACE_DIR/dist/$target-android-arm64.zip"
+    [[ -d "$src_dir" ]] || die "missing android-arm64 snapshot dir: $src_dir"
+    python3 - "$src_dir" "$zip_path" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+src = pathlib.Path(sys.argv[1])
+dest = pathlib.Path(sys.argv[2])
+dest.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in src.rglob('*'):
+        if path.is_file():
+            zf.write(path, path.relative_to(src))
+PY
+  done
 
   cat >"$stage_dir/README.md" <<EOF
 # Flutter Android Bionic Termux Host Bundle
@@ -550,6 +586,7 @@ Files provided:
 - bin/cache/artifacts/engine/linux-arm64/const_finder.dart.snapshot
 - bin/cache/artifacts/engine/linux-arm64/gen_snapshot
 - bin/cache/artifacts/engine/android-*-{profile,release}/linux-arm64/gen_snapshot
+- bin/cache/artifacts/engine/android-*-{profile,release}/android-arm64/gen_snapshot
 
 Copy the contents of overlay/ on top of a Flutter SDK checkout after applying
 the Termux host compatibility patch in the installer repo.
