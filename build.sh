@@ -492,7 +492,14 @@ package_termux_host_bundle() {
   local cache_root="$overlay_root/bin/cache"
   local engine_root="$cache_root/artifacts/engine"
   local host_engine_dir="$engine_root/linux-arm64"
-  local host_gen_snapshot_dir="$engine_root/android-arm-profile/linux-arm64"
+  local -a host_gen_snapshot_dirs=(
+    "$engine_root/android-arm-profile/linux-arm64"
+    "$engine_root/android-arm-release/linux-arm64"
+    "$engine_root/android-arm64-profile/linux-arm64"
+    "$engine_root/android-arm64-release/linux-arm64"
+    "$engine_root/android-x64-profile/linux-arm64"
+    "$engine_root/android-x64-release/linux-arm64"
+  )
   local dart_sdk_dir="$out_dir/dart-sdk"
   local gen_snapshot_src="$dart_sdk_dir/bin/utils/gen_snapshot"
   local font_subset_src=""
@@ -507,17 +514,25 @@ package_termux_host_bundle() {
     die "missing const_finder.dart.snapshot output in $out_dir"
 
   rm -rf "$stage_dir"
-  mkdir -p "$cache_root" "$host_engine_dir" "$host_gen_snapshot_dir" "$WORKSPACE_DIR/dist"
+  mkdir -p "$cache_root" "$host_engine_dir" "$WORKSPACE_DIR/dist"
+  local dir
+  for dir in "${host_gen_snapshot_dirs[@]}"; do
+    mkdir -p "$dir"
+  done
 
   cp -a "$dart_sdk_dir" "$cache_root/"
   cp -a "$font_subset_src" "$host_engine_dir/font-subset"
   cp -a "$const_finder_src" "$host_engine_dir/const_finder.dart.snapshot"
   cp -a "$gen_snapshot_src" "$host_engine_dir/gen_snapshot"
-  cp -a "$gen_snapshot_src" "$host_gen_snapshot_dir/gen_snapshot"
+  for dir in "${host_gen_snapshot_dirs[@]}"; do
+    cp -a "$gen_snapshot_src" "$dir/gen_snapshot"
+  done
 
   if [[ -f "$out_dir/gen_snapshot_product" ]]; then
     cp -a "$out_dir/gen_snapshot_product" "$host_engine_dir/gen_snapshot_product"
-    cp -a "$out_dir/gen_snapshot_product" "$host_gen_snapshot_dir/gen_snapshot_product"
+    for dir in "${host_gen_snapshot_dirs[@]}"; do
+      cp -a "$out_dir/gen_snapshot_product" "$dir/gen_snapshot_product"
+    done
   fi
 
   normalize_dart_sdk_semver "$cache_root"
@@ -534,7 +549,7 @@ Files provided:
 - bin/cache/artifacts/engine/linux-arm64/font-subset
 - bin/cache/artifacts/engine/linux-arm64/const_finder.dart.snapshot
 - bin/cache/artifacts/engine/linux-arm64/gen_snapshot
-- bin/cache/artifacts/engine/android-arm-profile/linux-arm64/gen_snapshot
+- bin/cache/artifacts/engine/android-*-{profile,release}/linux-arm64/gen_snapshot
 
 Copy the contents of overlay/ on top of a Flutter SDK checkout after applying
 the Termux host compatibility patch in the installer repo.

@@ -13,7 +13,13 @@ This repo does not vendor the full Flutter engine checkout. `build.sh` bootstrap
   - Android-bionic `dart-sdk`
   - `font-subset`
   - `const_finder.dart.snapshot`
-  - `gen_snapshot`
+  - `gen_snapshot` for:
+    - `android-arm-profile/linux-arm64`
+    - `android-arm-release/linux-arm64`
+    - `android-arm64-profile/linux-arm64`
+    - `android-arm64-release/linux-arm64`
+    - `android-x64-profile/linux-arm64`
+    - `android-x64-release/linux-arm64`
 
 The Termux host bundle rewrites the Dart SDK version from prerelease syntax to
 stable build-metadata syntax (for example `3.7.0-260.0.dev` becomes
