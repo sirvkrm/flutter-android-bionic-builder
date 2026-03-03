@@ -27,6 +27,7 @@ This repo does not vendor the full Flutter engine checkout. `build.sh` bootstrap
   - `android-arm64-release-android-arm64.zip`
   - `android-x64-profile-android-arm64.zip`
   - `android-x64-release-android-arm64.zip`
+  - `dart-sdk-android-arm64.zip`
 
 The Termux host bundle rewrites the Dart SDK version from prerelease syntax to
 stable build-metadata syntax (for example `3.7.0-260.0.dev` becomes
