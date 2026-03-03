@@ -488,6 +488,7 @@ package_termux_host_bundle() {
   local bundle_name="flutter-android-bionic-termux-host-arm64-$bundle_stamp"
   local stage_dir="$WORKSPACE_DIR/out/$bundle_name"
   local archive_path="$WORKSPACE_DIR/dist/$bundle_name.tar.gz"
+  local dart_sdk_zip="$WORKSPACE_DIR/dist/dart-sdk-android-arm64.zip"
   local overlay_root="$stage_dir/overlay"
   local cache_root="$overlay_root/bin/cache"
   local engine_root="$cache_root/artifacts/engine"
@@ -542,6 +543,20 @@ package_termux_host_bundle() {
   fi
 
   normalize_dart_sdk_semver "$cache_root"
+
+  python3 - "$cache_root/dart-sdk" "$dart_sdk_zip" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+sdk_dir = pathlib.Path(sys.argv[1])
+dest = pathlib.Path(sys.argv[2])
+dest.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in sdk_dir.rglob('*'):
+        if path.is_file():
+            zf.write(path, path.relative_to(sdk_dir.parent))
+PY
 
   local target=""
   for target in "${android_targets[@]}"; do
