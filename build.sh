@@ -416,6 +416,16 @@ release_stamp() {
   date -u +%Y%m%d
 }
 
+termux_framework_engine_stamp() {
+  if [[ -n "${FLUTTER_TERMUX_ENGINE_STAMP:-}" ]]; then
+    printf '%s\n' "$FLUTTER_TERMUX_ENGINE_STAMP"
+    return 0
+  fi
+
+  # Flutter 3.32.8 framework engine stamp. Override via FLUTTER_TERMUX_ENGINE_STAMP when needed.
+  printf '%s\n' "ef0cd000916d64fa0c5d09cc809fa7ad244a5767"
+}
+
 termux_host_out_dir() {
   printf '%s\n' "$SRC_DIR/out/android_debug_unopt_arm64_termuxsdk"
 }
@@ -486,9 +496,15 @@ package_termux_host_bundle() {
   local bundle_stamp
   bundle_stamp=$(release_stamp)
   local bundle_name="flutter-android-bionic-termux-host-arm64-$bundle_stamp"
+  local framework_engine_stamp
+  framework_engine_stamp=$(termux_framework_engine_stamp)
   local stage_dir="$WORKSPACE_DIR/out/$bundle_name"
   local archive_path="$WORKSPACE_DIR/dist/$bundle_name.tar.gz"
   local dart_sdk_zip="$WORKSPACE_DIR/dist/dart-sdk-android-arm64.zip"
+  local dart_sdk_zip_engine="$WORKSPACE_DIR/dist/dart-sdk-android-arm64-$framework_engine_stamp.zip"
+  local flutter_patched_sdk_zip="$WORKSPACE_DIR/dist/flutter_patched_sdk-$framework_engine_stamp.zip"
+  local flutter_patched_sdk_product_zip="$WORKSPACE_DIR/dist/flutter_patched_sdk_product-$framework_engine_stamp.zip"
+  local linux_tools_zip="$WORKSPACE_DIR/dist/linux-arm64-tools-$framework_engine_stamp.zip"
   local overlay_root="$stage_dir/overlay"
   local cache_root="$overlay_root/bin/cache"
   local engine_root="$cache_root/artifacts/engine"
@@ -513,9 +529,24 @@ package_termux_host_bundle() {
   local gen_snapshot_src="$dart_sdk_dir/bin/utils/gen_snapshot"
   local font_subset_src=""
   local const_finder_src=""
+  local frontend_server_src="$out_dir/frontend_server_aot.dart.snapshot"
+  local frontend_server_alt="$out_dir/gen/frontend_server_aot.dart.snapshot"
+  local isolate_snapshot_src="$out_dir/gen/flutter/lib/snapshot/isolate_snapshot.bin"
+  local vm_isolate_snapshot_src="$out_dir/gen/flutter/lib/snapshot/vm_isolate_snapshot.bin"
+  local patched_sdk_dir="$out_dir/flutter_patched_sdk"
+  local icudtl_src="$out_dir/icudtl.dat"
 
   [[ -d "$dart_sdk_dir" ]] || die "missing Dart SDK output: $dart_sdk_dir"
   [[ -f "$gen_snapshot_src" ]] || die "missing Termux gen_snapshot: $gen_snapshot_src"
+  [[ -d "$patched_sdk_dir" ]] || die "missing flutter_patched_sdk output: $patched_sdk_dir"
+  [[ -f "$patched_sdk_dir/platform_strong.dill" ]] || die "missing platform_strong.dill in $patched_sdk_dir"
+  [[ -f "$patched_sdk_dir/vm_outline_strong.dill" ]] || die "missing vm_outline_strong.dill in $patched_sdk_dir"
+  [[ -f "$isolate_snapshot_src" ]] || die "missing isolate snapshot: $isolate_snapshot_src"
+  [[ -f "$vm_isolate_snapshot_src" ]] || die "missing VM isolate snapshot: $vm_isolate_snapshot_src"
+  if [[ ! -f "$frontend_server_src" ]]; then
+    frontend_server_src="$frontend_server_alt"
+  fi
+  [[ -f "$frontend_server_src" ]] || die "missing frontend_server_aot.dart.snapshot in $out_dir"
 
   font_subset_src=$(find_termux_font_subset "$out_dir") ||
     die "missing font-subset output in $out_dir"
@@ -557,6 +588,64 @@ with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         if path.is_file():
             zf.write(path, path.relative_to(sdk_dir.parent))
 PY
+  cp -f "$dart_sdk_zip" "$dart_sdk_zip_engine"
+
+  python3 - "$patched_sdk_dir" "$flutter_patched_sdk_zip" "flutter_patched_sdk" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+src = pathlib.Path(sys.argv[1])
+dest = pathlib.Path(sys.argv[2])
+root_name = sys.argv[3]
+dest.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in src.rglob('*'):
+        if path.is_file():
+            zf.write(path, pathlib.Path(root_name) / path.relative_to(src))
+PY
+
+  python3 - "$patched_sdk_dir" "$flutter_patched_sdk_product_zip" "flutter_patched_sdk_product" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+src = pathlib.Path(sys.argv[1])
+dest = pathlib.Path(sys.argv[2])
+root_name = sys.argv[3]
+dest.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in src.rglob('*'):
+        if path.is_file():
+            zf.write(path, pathlib.Path(root_name) / path.relative_to(src))
+PY
+
+  local linux_tools_stage="$stage_dir/cache_assets/linux-arm64"
+  rm -rf "$linux_tools_stage"
+  mkdir -p "$linux_tools_stage"
+  cp -a "$frontend_server_src" "$linux_tools_stage/frontend_server_aot.dart.snapshot"
+  cp -a "$gen_snapshot_src" "$linux_tools_stage/gen_snapshot"
+  cp -a "$isolate_snapshot_src" "$linux_tools_stage/isolate_snapshot.bin"
+  cp -a "$vm_isolate_snapshot_src" "$linux_tools_stage/vm_isolate_snapshot.bin"
+  cp -a "$font_subset_src" "$linux_tools_stage/font-subset"
+  cp -a "$const_finder_src" "$linux_tools_stage/const_finder.dart.snapshot"
+  if [[ -f "$icudtl_src" ]]; then
+    cp -a "$icudtl_src" "$linux_tools_stage/icudtl.dat"
+  fi
+  python3 - "$linux_tools_stage" "$linux_tools_zip" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+src = pathlib.Path(sys.argv[1])
+dest = pathlib.Path(sys.argv[2])
+dest.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in src.rglob('*'):
+        if path.is_file():
+            zf.write(path, path.relative_to(src))
+PY
+  rm -rf "$stage_dir/cache_assets"
 
   local target=""
   for target in "${android_targets[@]}"; do
