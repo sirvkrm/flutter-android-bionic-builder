@@ -28,6 +28,10 @@ This repo does not vendor the full Flutter engine checkout. `build.sh` bootstrap
   - `android-x64-profile-android-arm64.zip`
   - `android-x64-release-android-arm64.zip`
   - `dart-sdk-android-arm64.zip`
+  - `dart-sdk-android-arm64-<engine-stamp>.zip`
+  - `flutter_patched_sdk-<engine-stamp>.zip`
+  - `flutter_patched_sdk_product-<engine-stamp>.zip`
+  - `linux-arm64-tools-<engine-stamp>.zip`
 
 The Termux host bundle rewrites the Dart SDK version from prerelease syntax to
 stable build-metadata syntax (for example `3.7.0-260.0.dev` becomes
@@ -86,6 +90,10 @@ Argument format:
 The last flag controls whether Vulkan validation layers are disabled in debug builds for better portability.
 
 The Termux host bundle command currently builds the `arm64` host overlay only and writes a tarball into `dist/`.
+
+Set `FLUTTER_TERMUX_ENGINE_STAMP` to override the engine-stamp suffix used for
+mirror zip names (default is Flutter 3.32.8 engine stamp:
+`ef0cd000916d64fa0c5d09cc809fa7ad244a5767`).
 
 ## Patches
 
